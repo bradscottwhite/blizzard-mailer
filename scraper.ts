@@ -3,37 +3,38 @@ import { promises as fs } from 'fs';
 import dotenv from 'dotenv';
 dotenv.config();
 
+type CompanyData = {
+	title: string;
+	href: string;
+};
+
+type SiteData = {
+	title: string;
+	website: string;
+};
+
+type EmailData = {
+	title: string;
+	website: string;
+	emails: Email[];
+};
+
+type Email = {
+	firstName: string;
+	lastName: string;
+	email: string[];
+};
+
 const scraper = async (
-	url: string,
-	pages: number
-) => {
+	pageUrl: string,
+	startPage: number,
+	pagesNum: number
+): Promise<EmailData[]> => {
 	const browser = await puppeteer.launch({
 		headless: false // after testing set to true
 	});
 
-	interface CompanyData {
-		title: string,
-		href: string
-	}
-	
-	interface SiteData {
-		title: string,
-		website: string
-	}
-
-	interface EmailData {
-		title: string,
-		website: string,
-		emails: Email[]
-	}
-
-	interface Email {
-		firstName: string,
-		lastName: string,
-		email: string[]
-	}
-
-	const getCompanies = async (url: string) => {
+	const getCompanies = async (pageUrl: string) => {
 		const page = await browser.newPage();
 
 		// Login to LinkedIn:
@@ -43,14 +44,14 @@ const scraper = async (
 			domain: '.www.linkedin.com'
 		});
 
-		await page.goto(url);
+		await page.goto(pageUrl);
 
 		// Scrape company LinkedIn addresses:
 		let data: CompanyData[] = [];
 
 		const linkSel = 'li > div > div > .entity-result__content.entity-result__divider.pt3.pb3.t-12.t-black--light > .mb1 > .t-roman.t-sans > div > span > span > a';
 
-		for (let i = 0; i < pages; i++) {
+		for (let i = startPage; i < pagesNum; i++) {
 			await page.waitForSelector(linkSel);
 			const newData = await page.$$eval(
 				linkSel,
@@ -63,8 +64,8 @@ const scraper = async (
 
 			data = [ ...data, ...newData ];
 
-			if (i !== pages - 1)
-				await page.goto(url + `&page=${i + 2}`);
+			if (i !== pagesNum)
+				await page.goto(pageUrl + `&page=${i + 1}`);
 		}
 
 		await page.close();
@@ -81,13 +82,15 @@ const scraper = async (
 			await aboutPage.goto(coData[i].href + 'about');
 			
 			const siteSel = 'dd.mb4.text-body-small.t-black--light a';
-			await aboutPage.waitForSelector(siteSel);
-			const website = await aboutPage.$eval(siteSel, site => site.href);
+			if (await aboutPage.$(siteSel) !== null) {
+				await aboutPage.waitForSelector(siteSel);
+				const website = await aboutPage.$eval(siteSel, site => site.href);
 
-			data.push({
-				title: coData[i].title,
-				website
-			});
+				data.push({
+					title: coData[i].title,
+					website
+				});
+			}
 		}
 		
 		await aboutPage.close();
@@ -119,83 +122,85 @@ const scraper = async (
 			const liSel = 'li > div > div > .entity-result__content.entity-result__divider.pt3.pb3.t-12.t-black--light > .mb1 > .t-roman.t-sans > div > span.entity-result__title-line.entity-result__title-line--2-lines > span > a > span > span:nth-child(1)';
 			await page.waitForSelector(ulSel);
 			
-			const names = await page.$$eval(
-				liSel,
-				lis => Array.from(lis)
-					.splice(0, 3)
-					.map(li => li.innerText)
-			);
-			
-			// Brute force verify/check 3 methods of address codes and find valid email:
-			for (let j in names) {
-				const firstName = names[j].split(' ')[0];
-				const lastName = names[j].split(' ')[1];
+			if (Array.from(await page.$$(liSel)).length >= 2) {
+				const names = await page.$$eval(
+					liSel,
+					lis => Array.from(lis)
+						.splice(0, 3)
+						.map(li => li.innerText)
+				);
+				
+				// Brute force verify/check 3 methods of address codes and find valid email:
+				for (let j in names) {
+					const firstName = names[j].split(' ')[0];
+					const lastName = names[j].split(' ')[1];
 
-				// Verify email against 3 methods:
-				// 1. first.Last@website.com
-				const email1 = `${firstName}.${lastName}@${website}`;
-				// 2. firstLast@website.com
-				const email2 = `${firstName}${lastName}@${website}`;
-				// 3. fLast@website.com
-				const email3 = `${firstName.charAt(0)}${lastName}@${website}`;
+					// Verify email against 3 methods:
+					// 1. first.Last@website.com
+					const email1 = `${firstName}.${lastName}@${website}`;
+					// 2. firstLast@website.com
+					const email2 = `${firstName}${lastName}@${website}`;
+					// 3. fLast@website.com
+					const email3 = `${firstName.charAt(0)}${lastName}@${website}`;
 
-				// Verify emails:
-				// Don't use Hunter.io as it costs money!:
-				/*const verify = async (email: string) => {
-					const newPage = await browser.newPage();
+					// Verify emails:
+					// Don't use Hunter.io as it costs money!:
+					/*const verify = async (email: string) => {
+						const newPage = await browser.newPage();
 
-					// Login to hunter.io:
-					await page.setCookie({
-						name: '_emailhunter_session',
-						value: process.env.HUNTER as string,
-						domain: 'hunter.io'
+						// Login to hunter.io:
+						await page.setCookie({
+							name: '_emailhunter_session',
+							value: process.env.HUNTER as string,
+							domain: 'hunter.io'
+						});
+
+						await newPage.goto(
+							`https://hunter.io/verify/${email}`
+						);
+						
+						const statusSel = '#email-status > div';
+						await newPage.waitForSelector(statusSel);
+						const status = await newPage.$eval(
+							statusSel,
+							status => status.innerText === 'VALID'
+						);
+
+						await newPage.close();
+
+						return status;
+					};*/
+
+					/*let email;
+					if (await verify(email1)) email = email1;
+					else if (await verify(email2)) email = email2;
+					else if (await verify(email3)) email = email3;*/
+
+					//if (email)
+					emails.push({
+						firstName,
+						lastName,
+						
+						// These aren't validated and are most likely +90% invalid:
+						// Given 70% will always be invalid no matter what
+						// 70% - +90% = -33% Valid
+						// Meaning 150 companies
+						// = 3 employees
+						// = 3 email addresses
+						// - 66% Invalid
+						// = -~50 recruiter emails
+						// (10 companies = -~3 valid email addresses)
+						
+						email: [ email1.toLowerCase(), email2.toLowerCase(), email3.toLowerCase() ]
 					});
+				}
 
-					await newPage.goto(
-						`https://hunter.io/verify/${email}`
-					);
-					
-					const statusSel = '#email-status > div';
-					await newPage.waitForSelector(statusSel);
-					const status = await newPage.$eval(
-						statusSel,
-						status => status.innerText === 'VALID'
-					);
-
-					await newPage.close();
-
-					return status;
-				};*/
-
-				/*let email;
-				if (await verify(email1)) email = email1;
-				else if (await verify(email2)) email = email2;
-				else if (await verify(email3)) email = email3;*/
-
-				//if (email)
-				emails.push({
-					firstName,
-					lastName,
-					
-					// These aren't validated and are most likely +90% invalid:
-					// Given 70% will always be invalid no matter what
-					// 70% - +90% = -33% Valid
-					// Meaning 150 companies
-					// = 3 employees
-					// = 3 email addresses
-					// - 66% Invalid
-					// = -~50 recruiter emails
-					// (10 companies = -~3 valid email addresses)
-					
-					email: [ email1, email2, email3 ]
+				data.push({
+					title: siteData[i].title,
+					website,
+					emails
 				});
 			}
-
-			data.push({
-				title: siteData[i].title,
-				website,
-				emails
-			});
 		}
 		
 		await page.close();
@@ -206,19 +211,53 @@ const scraper = async (
 
 	const emailData = await getEmails(
 		await getWebsites(
-			await getCompanies(url)
+			await getCompanies(pageUrl)
 		)
 	);
 
 
 	await browser.close();
 
-	fs.writeFile(
-		'data.json',
-		JSON.stringify(emailData)
+	// Update progress:
+	const pastTxt = await fs.readFile('progress.txt', 'utf8');
+	const pastUrl = pastTxt.split('\n')[0].split(': ')[1];
+	const pastPages = pastTxt.split('\n')[1].split(': ')[1];
+	const pastStart = parseInt(
+		pastPages.split('-')[0]
+	);
+	const pastEnd = parseInt(
+		pastPages.split('-')[1]
+	);
+	const pastNum = parseInt(
+		pastTxt.split('\n')[2].split(': ')[1]
 	);
 
-	return emailData;
+	if (pastUrl === pageUrl && pastEnd === startPage + 1)
+		fs.writeFile(
+			'progress.txt',
+`Url: ${pageUrl}
+Scraped pages: ${pastStart}-${pastEnd + pagesNum}
+Total: ${pastNum + pagesNum}`
+		);
+	else
+		fs.writeFile(
+			'progress.txt',
+`Url: ${pageUrl}
+Scraped pages: ${startPage}-${startPage + pagesNum}
+total: ${pagesNum - startPage + 1}`
+		);
+
+	// Add data to old data in file:
+	const fileData = await fs.readFile('data.json', 'utf8');
+	fs.writeFile(
+		'data.json',
+		JSON.stringify([
+			...JSON.parse(fileData),
+			...emailData
+		])
+	);
+
+	return await emailData;
 };
 
 export default scraper;

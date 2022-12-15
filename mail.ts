@@ -20,7 +20,8 @@ const mail = (
 		from: process.env.EMAIL,
 		to,
 		subject,
-		text,
+		//text,
+		html: text,
 		attachments: files.map(file => ({
 			filename: file[0],
 			path: file[1]
@@ -31,7 +32,7 @@ const mail = (
 		details,
 		err => {
 			if (err) console.log('Error sending email ', err);
-			else console.log('Email sent!');
+			else console.log(`Email sent to ${to}!`);
 		}
 	);
 };
